@@ -318,6 +318,10 @@ body.home .top b{color:#fff}
 .dev{background:var(--red-bg);border:1.5px solid #E8B6B6;color:var(--red);border-radius:var(--r);padding:11px 13px;margin-bottom:12px;font-size:13.5px}
 .chk{display:flex;gap:8px;align-items:flex-start;font-size:13.5px;margin:6px 0}
 .chk i{font-size:18px;margin-top:1px}.chk.ok i{color:var(--green)}.chk.no i{color:var(--red)}.chk.av i{color:var(--amber)}
+
+.slotp .galb{position:absolute;right:6px;top:6px;z-index:3;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:0;border-radius:50%;background:rgba(20,20,20,.78);color:#fff;padding:0}
+.slotp .galb i{font-size:18px;color:#fff;margin:0}
+.slotp .galb span{display:none}
 </style>
 </head>
 <body>
@@ -564,6 +568,7 @@ body.home .top b{color:#fff}
 <datalist id="dl-funcao"></datalist>
 <datalist id="dl-equip"></datalist>
 <input type="file" id="foto-file" accept="image/*" capture="environment" style="display:none" onchange="fotoRecebida(this)">
+<input type="file" id="foto-gal" accept="image/*" style="display:none" onchange="fotoRecebida(this)">
 
 <div class="ov" id="ov-gps">
   <div class="sheet" style="max-height:88vh;overflow:auto">
@@ -1489,7 +1494,7 @@ if(typeof module!=='undefined') module.exports = Exp;
    Depois por trecho) e a Ordem de Serviço do dia. Funciona offline e
    sincroniza pela nuvem (Supabase), igual ao app SSCONPAV de campo.
    ====================================================================== */
-const APP_VERSION = '20261015-009';
+const APP_VERSION = '20261017-002';
 
 /* ======================================================================
    CONFIGURAÇÃO DA NUVEM — preencha UMA VEZ, antes de publicar o app.
@@ -2277,6 +2282,7 @@ async function carimbar(dataUrl, m){
   if(e.uf)     linhas.push({t:e.uf});
   if(m.lat != null) linhas.push({t: grausMinSeg(m.lat,'lat')+'  '+grausMinSeg(m.lng,'lng')});
   if(m.alt != null) linhas.push({t: m.alt+' m'});
+  if(m.origem==='galeria') linhas.push({t:'Foto da galeria'});
   if(m.indice)      linhas.push({t:'Número do índice: '+m.indice});
 
   const alturaLinha = Math.round(fs*1.32);
@@ -2693,24 +2699,56 @@ function relRender(){
 function slotHtml(chave,rot){
   const ft=FTS.find(f=>f.uid===fotoUid(chave));
   const src=ft?(IMG.get(ft.uid)||ft.miniUrl||ft.url||''):'';
-  const clk=editavel()?`onclick="fotoPedir('${chave}')"`:'';
-  if(!ft||!src) return `<div class="slotp" data-slot="${chave}" ${clk}><i class="ti ti-camera"></i><div class="rot">${esc(rot)}</div></div>`;
+  const ed=editavel();
+  const clk=ed?`onclick="fotoPedir('${chave}')"`:'';
+  const gal=ed?`<button type="button" class="galb" title="Escolher da galeria" onclick="event.stopPropagation();fotoGaleria('${chave}')"><i class="ti ti-photo"></i><span>Galeria</span></button>`:'';
+  if(!ft||!src) return `<div class="slotp" data-slot="${chave}" ${clk}><i class="ti ti-camera"></i><div class="rot">${esc(rot)}</div>${gal}</div>`;
+  const gtxt=ft.lat==null?'sem GPS':(ft.origem==='galeria'?'GPS · galeria':'GPS');
   return `<div class="slotp cheio" data-slot="${chave}" ${clk}><img src="${src}" alt="">
-    <span class="gps ${ft.lat==null?'no':''}">${ft.lat==null?'sem GPS':'GPS'}</span><div class="tag">${esc(rot)}</div></div>`;
+    <span class="gps ${ft.lat==null?'no':''}">${gtxt}</span><div class="tag">${esc(rot)}</div>${gal}</div>`;
 }
-/* Foto recém-tirada chega com a data de agora; a da galeria chega com a data antiga. */
-const JANELA_FOTO_MIN=15;
-function fotoDeAgora(arq){
-  const t=arq&&arq.lastModified; if(!t) return true;
-  const m=(Date.now()-t)/60000; return m<=JANELA_FOTO_MIN&&m>=-JANELA_FOTO_MIN;
-}
+/* Toque no quadro = câmera. O botão "Galeria" do quadro escolhe uma foto já tirada;
+   essa foto só entra com localização (a gravada nela, ou a do aparelho se o usuário confirmar). */
 function fotoPedir(chave){
   if(!editavel()) return;
   FOTO_ALVO=chave;
-  const f=$('foto-file');
-  /* O apontador só fotografa na hora; o gestor pode escolher da galeria. */
-  if(ehGestor()) f.removeAttribute('capture'); else f.setAttribute('capture','environment');
-  f.value=''; f.click();
+  const f=$('foto-file'); f.value=''; f.click();
+}
+function fotoGaleria(chave){
+  if(!editavel()) return;
+  FOTO_ALVO=chave;
+  const f=$('foto-gal'); f.value=''; f.click();
+}
+/* Lê a localização gravada dentro de um JPEG (EXIF). Devolve {lat,lng,alt,data} ou null. */
+async function exifLer(arq){
+  try{
+    const buf=await arq.slice(0,262144).arrayBuffer(); const v=new DataView(buf);
+    if(v.getUint16(0)!==0xFFD8) return null;
+    let o=2, tiff=-1;
+    while(o+4<v.byteLength){
+      const m=v.getUint16(o), len=v.getUint16(o+2);
+      if(m===0xFFE1 && v.getUint32(o+4)===0x45786966){ tiff=o+10; break; }
+      if((m&0xFF00)!==0xFF00) break; o+=2+len;
+    }
+    if(tiff<0) return null;
+    const le=v.getUint16(tiff)===0x4949, u16=p=>v.getUint16(p,le), u32=p=>v.getUint32(p,le);
+    const ifd=(p)=>{ const n=u16(p), r={}; for(let i=0;i<n;i++){ const e=p+2+i*12; r[u16(e)]={t:u16(e+2),n:u32(e+4),p:e+8}; } return r; };
+    const rat=(p)=>{ const d=u32(p+4); return d?u32(p)/d:0; };
+    const i0=ifd(tiff+u32(tiff+4));
+    const out={lat:null,lng:null,alt:null,data:null};
+    if(i0[0x8769]){ const ex=ifd(tiff+u32(i0[0x8769].p)); const d=ex[0x9003]; if(d){ const q=tiff+u32(d.p); let t=''; for(let i=0;i<19;i++) t+=String.fromCharCode(v.getUint8(q+i));
+      const m=t.match(/^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d):(\d\d)/); if(m) out.data=new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]).toISOString(); } }
+    if(!i0[0x8825]) return out.data?out:null;
+    const g=ifd(tiff+u32(i0[0x8825].p));
+    const dms=(e)=>{ if(!e) return null; const q=tiff+u32(e.p); return rat(q)+rat(q+8)/60+rat(q+16)/3600; };
+    const ref=(e)=>e?String.fromCharCode(v.getUint8(e.p)):'';
+    let la=dms(g[2]), lo=dms(g[4]);
+    if(la==null||lo==null||(!la&&!lo)) return out.data?out:null;
+    if(ref(g[1])==='S') la=-la; if(ref(g[3])==='W') lo=-lo;
+    out.lat=la; out.lng=lo;
+    if(g[6]){ const a=rat(tiff+u32(g[6].p)); out.alt=(g[5]&&v.getUint8(g[5].p)===1)?-a:a; }
+    return out;
+  }catch(e){ console.warn('sem EXIF',e); return null; }
 }
 function avisoRel(msg){ const id=ABA==='os'?'os-aviso':'rt-aviso'; if($(id)) alerta(id,msg,0); }
 function ocupado(chave,txt){
@@ -2719,18 +2757,27 @@ function ocupado(chave,txt){
 }
 async function fotoRecebida(input){
   const arq=input.files[0]; if(!arq||!FOTO_ALVO||!REL) return;
-  const chave=FOTO_ALVO; input.value='';
-  if(!ehGestor() && !fotoDeAgora(arq)){
-    avisoRel('Só é aceita <b>foto tirada na hora</b>. Toque de novo no quadro e use a câmera.');
-    await relRecarregar(); relRender(); return;
-  }
+  const chave=FOTO_ALVO; const galeria=input.id==='foto-gal'; input.value='';
   ocupado(chave,'Processando...');
   try{
+    const exif=galeria?await exifLer(arq):null;   /* ler antes de comprimir: a compressão apaga o EXIF */
     const original=await comprimir(arq,ID.qualidade||1000,0.7);
-    ocupado(chave,'Pegando a localização...');
-    let gps=await gpsAgora(20000);
-    if(!gps){ ativarGPS(false); ocupado(chave,'Procurando o sinal...'); gps=await gpsAgora(25000); }
-    if(!gps){
+    let gps=null, quando=new Date().toISOString();
+    if(galeria){
+      quando=(exif&&exif.data)||(arq.lastModified?new Date(arq.lastModified).toISOString():quando);
+      if(exif&&exif.lat!=null) gps={lat:exif.lat,lng:exif.lng,alt:exif.alt,prec:null};
+      else{
+        const usar=await perguntaSheet('Esta foto não tem localização',
+          'A foto da galeria não traz coordenadas gravadas (alguns celulares apagam isso). Posso usar a <b>localização atual do aparelho</b>, mas só faça isso se você está <b>no local</b> onde a foto foi tirada.',
+          'Usar a localização atual','Guardar sem localização');
+        if(usar){ ocupado(chave,'Pegando a localização...'); gps=await gpsAgora(20000); if(!gps){ ativarGPS(false); gps=await gpsAgora(25000); } }
+      }
+    }else{
+      ocupado(chave,'Pegando a localização...');
+      gps=await gpsAgora(20000);
+      if(!gps){ ativarGPS(false); ocupado(chave,'Procurando o sinal...'); gps=await gpsAgora(25000); }
+    }
+    if(!gps && !galeria){
       const prob0=gpsMotivo();
       const seguir=await perguntaSheet('Esta foto vai sair sem localização',
         `${prob0?prob0.t:'O GPS não respondeu a tempo.'}<br><br>Saia de baixo de cobertura, confira se a <b>Localização</b> do celular está ligada e tente de novo. Sem coordenada o relatório perde valor de prova.`,
@@ -2738,8 +2785,8 @@ async function fotoRecebida(input){
       if(seguir){ ativarGPS(false); ocupado(chave,'Procurando o sinal...'); gps=await gpsAgora(30000); }
     }
     ocupado(chave,'Processando...');
-    const meta={dataHora:new Date().toISOString(),lat:gps&&gps.lat,lng:gps&&gps.lng,alt:gps&&gps.alt,precisao:gps&&gps.prec,
-      heading:HEADING,direcao:grausTxt(HEADING),indice:Date.now().toString().slice(-6),endereco:null,mapa:null};
+    const meta={dataHora:quando,origem:galeria?'galeria':'camera',lat:gps&&gps.lat,lng:gps&&gps.lng,alt:gps&&gps.alt,precisao:gps&&gps.prec,
+      heading:galeria?null:HEADING,direcao:galeria?'':grausTxt(HEADING),indice:Date.now().toString().slice(-6),endereco:null,mapa:null};
     let enderecoOk=false;
     if(gps&&navigator.onLine){
       try{ meta.endereco=await buscarEndereco(gps.lat,gps.lng); enderecoOk=true; }catch(e){ console.warn('sem endereço',e); }
@@ -2749,7 +2796,7 @@ async function fotoRecebida(input){
     const carimbada=await carimbar(original,meta);
     const uid=fotoUid(chave), partes=chave.split('|');
     await dbSave('fotos',{uid,relatorioUid:REL.uid,chave,slot:partes[1],trechoUid:partes[0]==='os'?'':partes[0],
-      dataHora:meta.dataHora,lat:meta.lat,lng:meta.lng,alt:meta.alt,precisao:meta.precisao,heading:meta.heading,direcao:meta.direcao,
+      dataHora:meta.dataHora,origem:meta.origem,lat:meta.lat,lng:meta.lng,alt:meta.alt,precisao:meta.precisao,heading:meta.heading,direcao:meta.direcao,
       indice:meta.indice,endereco:meta.endereco,enderecoOk,temMapa:!!meta.mapa,enviada:false,url:'',miniUrl:'',
       lancadoPor:ID.nome,dispositivo:ID.dispositivo});
     const antiga=(await dbGetAll('imagens')).find(i=>i.fotoUid===uid);
